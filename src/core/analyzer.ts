@@ -7,6 +7,7 @@ import {
   ComponentRole,
   ComponentGraph,
   GraphNode,
+  LineRange,
 } from "./componentInfo";
 export interface AnalyzeOptions {
   projectRoot: string;
@@ -117,16 +118,16 @@ function buildComponentInfoFromFunction(
 
   const loc = endLine - startLine + 1;
 
-  const props: string[] = extractPropNames(func, sourceFile);
+  const props: string[] = extractPropNames(func);
   const hooks: string[] = [];
   const children: string[] = [];
 
   if (func.body) {
-    ts.forEachChild(func.body, (node) => {
-      collectHooks(node, sourceFile, hooks);
-      collectChildren(node, sourceFile, children);
-    });
+    collectHooks(func.body, hooks);
+    collectChildren(func.body, children);
   }
+  const uniqueHooks = Array.from(new Set(hooks));
+  const uniqueChildren = Array.from(new Set(children));
 
   const complexity = 0;
 
@@ -137,6 +138,7 @@ function buildComponentInfoFromFunction(
     jsx: null,
   };
 
+  collectStructuralRanges(func, sourceFile, lineRanges);
   const role: ComponentRole = inferRoleFromPath(filePath);
 
   return {
@@ -144,8 +146,8 @@ function buildComponentInfoFromFunction(
     filePath: path.relative(process.cwd(), filePath),
     role,
     props,
-    hooks,
-    children: Array.from(new Set(children)),
+    hooks: uniqueHooks,
+    children: uniqueChildren,
     loc,
     complexity,
     lineRanges,
@@ -179,8 +181,7 @@ function containsJsx(
 }
 
 function extractPropNames(
-  func: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression,
-  sourceFile: ts.SourceFile
+  func: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression
 ): string[] {
   if (!func.parameters.length) return [];
 
@@ -202,11 +203,7 @@ function extractPropNames(
   return names;
 }
 
-function collectHooks(
-  node: ts.Node,
-  sourceFile: ts.SourceFile,
-  hooks: string[]
-) {
+function collectHooks(node: ts.Node, hooks: string[]) {
   if (ts.isCallExpression(node)) {
     const expr = node.expression;
     if (ts.isIdentifier(expr)) {
@@ -216,14 +213,10 @@ function collectHooks(
       }
     }
   }
-  ts.forEachChild(node, (child) => collectHooks(child, sourceFile, hooks));
+  ts.forEachChild(node, (child) => collectHooks(child, hooks));
 }
 
-function collectChildren(
-  node: ts.Node,
-  sourceFile: ts.SourceFile,
-  children: string[]
-) {
+function collectChildren(node: ts.Node, children: string[]) {
   if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
     const tag = node.tagName;
     if (ts.isIdentifier(tag)) {
@@ -234,9 +227,7 @@ function collectChildren(
       }
     }
   }
-  ts.forEachChild(node, (child) =>
-    collectChildren(child, sourceFile, children)
-  );
+  ts.forEachChild(node, (child) => collectChildren(child, children));
 }
 
 // Very simple path-based role inference for now
@@ -287,4 +278,111 @@ function buildGraph(components: ComponentInfo[]): ComponentGraph {
   }
 
   return graph;
+}
+
+function getLineRange(node: ts.Node, sourceFile: ts.SourceFile): LineRange {
+  const { line: startLine } = sourceFile.getLineAndCharacterOfPosition(
+    node.getStart(sourceFile, false)
+  );
+  const { line: endLine } = sourceFile.getLineAndCharacterOfPosition(
+    node.getEnd()
+  );
+  // Convert 0-based index to 1-based line number
+  return { start: startLine + 1, end: endLine + 1 };
+}
+
+function collectStructuralRanges(
+  func: ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression,
+  sourceFile: ts.SourceFile,
+  lineRanges: ComponentInfo["lineRanges"]
+) {
+  // If the function has no body (e.g., it's an interface definition), stop.
+  if (!func.body) return;
+
+  // We only care about statements inside the function body's block
+  const block = ts.isBlock(func.body) ? func.body.statements : [func.body];
+
+  for (const statement of block) {
+    // 1. STATE (useState, useReducer calls)
+    if (ts.isVariableStatement(statement)) {
+      const decl = statement.declarationList.declarations[0];
+      const initializer = decl?.initializer;
+
+      if (
+        decl &&
+        initializer &&
+        ts.isCallExpression(initializer) &&
+        ts.isIdentifier(initializer.expression) &&
+        initializer.expression.text.startsWith("use") &&
+        (initializer.expression.text.endsWith("State") ||
+          initializer.expression.text.endsWith("Reducer"))
+      ) {
+        // If we find the first useState/useReducer, this marks the state block
+        const currentRange = getLineRange(statement, sourceFile);
+        if (lineRanges.state === null) {
+          lineRanges.state = currentRange;
+        } else {
+          // Extend existing block
+          lineRanges.state.end = currentRange.end;
+        }
+      }
+    }
+
+    // 2. EFFECTS (useEffect, useLayoutEffect calls)
+    // Must be done via traversal since effects can be deeply nested (e.g. in an if statement)
+    ts.forEachChild(statement, (node) => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        (node.expression.text === "useEffect" ||
+          node.expression.text === "useLayoutEffect")
+      ) {
+        lineRanges.effects.push(getLineRange(node, sourceFile));
+      }
+    });
+
+    // 3. HANDLERS (Arrow/Function Expressions assigned to const/let/var or standalone functions)
+    if (ts.isVariableStatement(statement)) {
+      for (const decl of statement.declarationList.declarations) {
+        const initializer = decl.initializer;
+        if (
+          initializer &&
+          (ts.isArrowFunction(initializer) ||
+            ts.isFunctionExpression(initializer))
+        ) {
+          // Found a handler declared as const/let/var
+          lineRanges.handlers.push(getLineRange(statement, sourceFile));
+        }
+      }
+    } else if (ts.isFunctionDeclaration(statement) && statement !== func) {
+      // Found a handler declared as a named function inside the component body
+      lineRanges.handlers.push(getLineRange(statement, sourceFile));
+    }
+
+    // 4. JSX (Return Statement)
+    if (ts.isReturnStatement(statement)) {
+      const expr = statement.expression;
+      if (expr) {
+        // Look for JSX directly or JSX wrapped in a fragment/parenthesis
+        let targetNode: ts.Node = expr;
+        if (ts.isParenthesizedExpression(targetNode)) {
+          targetNode = targetNode.expression;
+        }
+
+        // We check if the expression itself is JSX (JsxElement, JsxSelfClosingElement, JsxFragment)
+        // Note: The `containsJsx` function already confirms the component returns JSX.
+        if (
+          ts.isJsxElement(targetNode) ||
+          ts.isJsxSelfClosingElement(targetNode) ||
+          ts.isJsxFragment(targetNode)
+        ) {
+          // Set the JSX line range to the actual return expression/JSX block
+          lineRanges.jsx = getLineRange(targetNode, sourceFile);
+        }
+
+        // Stop the loop after finding the return statement (usually the last thing)
+        return;
+      }
+    }
+  }
 }
