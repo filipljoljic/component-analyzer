@@ -1,5 +1,7 @@
 # Component Archaeologist
 
+[![smithery badge](https://smithery.ai/badge/@filipljoljic/component-analyzer)](https://smithery.ai/server/@filipljoljic/component-analyzer)
+
 Static analysis tool for React (JS/TS) projects that helps you understand and refactor your component architecture.
 
 It:
