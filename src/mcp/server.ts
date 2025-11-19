@@ -3,6 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { analyzeProject } from "../core/analyzer";
+import { scoreComponentForRefactor } from "../core/refactorRadar";
 
 function getProjectRootFromArgs(args: any): string {
   // Smithery / MCP should give us { projectRoot: "..." }
@@ -176,7 +177,7 @@ function createMcpServer() {
     "compo_map",
     {
       title: "Map all components",
-      description: "List all components grouped by role",
+      description: "List all components grouped by role with refactor hotspots",
       inputSchema: {
         projectRoot: z
           .string()
@@ -193,19 +194,57 @@ function createMcpServer() {
 
       const lines: string[] = [];
       const byRole: Record<string, string[]> = {};
+      const hotspots: string[] = [];
 
       for (const key of Object.keys(graph)) {
         const node = graph[key];
         const info = node.info;
         const role = info.role || "unknown";
+
+        const score = scoreComponentForRefactor(info);
+
+        // Emoji badge based on severity
+        let badge = "";
+        if (score.severity === "warning") badge = " ⚠️";
+        if (score.severity === "critical") badge = " 🔥";
+
+        // Short reasons for inline display
+        const shortReasons = score.signals.map((s) => s.reason).join(", ");
+
+        const extraMeta =
+          score.severity === "none" || !shortReasons
+            ? ""
+            : `, refactor: ${shortReasons}`;
+
+        const line = `${badge}- ${info.name}  (${info.filePath}, LOC: ${
+          info.loc
+        }, hooks: [${info.hooks.join(", ")}]${extraMeta})`;
+
         if (!byRole[role]) byRole[role] = [];
-        byRole[role].push(
-          `- ${info.name}  (${info.filePath}, LOC: ${
-            info.loc
-          }, hooks: [${info.hooks.join(", ")}])`
-        );
+        byRole[role].push(line);
+
+        // Collect separate hotspot list
+        if (score.severity === "warning" || score.severity === "critical") {
+          const details = score.signals.map((s) => s.details).join("; ");
+          hotspots.push(
+            `${badge} ${info.name}  → ${details}  [${info.loc} LOC, ${info.hooks.length} hooks, ${info.children.length} children]`
+          );
+        }
       }
 
+      // 1) Hotspots section at the top
+      if (hotspots.length) {
+        lines.push("REFACTOR HOTSPOTS");
+        lines.push("=================");
+        lines.push(
+          "These components are likely candidates for refactoring (large, complex, or very stateful):"
+        );
+        lines.push("");
+        lines.push(...hotspots);
+        lines.push("");
+      }
+
+      // 2) Role-grouped listing (with badges inline)
       for (const role of Object.keys(byRole).sort()) {
         lines.push(role.toUpperCase());
         lines.push("-----------------------");

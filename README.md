@@ -27,3 +27,10 @@ Clone and install:
 git clone <your-repo-url> component-archaeologist
 cd component-archaeologist
 npm install
+```
+
+Local run:
+
+```bash
+npx @smithery/cli@latest dev src/mcp/server.ts
+```
