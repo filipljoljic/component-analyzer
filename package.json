@@ -6,10 +6,12 @@
   "bin": {
     "component-archaeologist": "dist/cli/index.js"
   },
+  "module": "./src/mcp/server.ts",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "ts-node src/cli/index.ts",
-    "build:shttp": "npx @smithery/cli@latest build src/mcp/server.ts --out .smithery/index.cjs --transport shttp",
+    "build:shttp":
+      "npx @smithery/cli@latest build src/mcp/server.ts --out .smithery/index.cjs --transport shttp",
     "build": "npm run build:shttp"
   },
   "keywords": [],
