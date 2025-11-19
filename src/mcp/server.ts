@@ -1,12 +1,28 @@
 // src/mcp/server.ts
-import express, { Request, Response } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 
 import { analyzeProject } from "../core/analyzer";
 
-function getServer() {
+function getProjectRootFromArgs(args: any): string {
+  // Smithery / MCP should give us { projectRoot: "..." }
+  // but we defensively support a couple of names
+  const root =
+    args?.projectRoot ??
+    args?.path ?? // just in case some client uses "path"
+    args?.project_root; // snake_case variant
+
+  if (!root) {
+    throw new Error(
+      "Missing 'projectRoot' (or 'path') argument when calling MCP tool."
+    );
+  }
+
+  return String(root);
+}
+
+// Build the MCP server with all tools
+function createMcpServer() {
   const server = new McpServer({
     name: "component-archaeologist",
     version: "0.1.0",
@@ -33,11 +49,12 @@ function getServer() {
       },
     } as any,
     async (args: any) => {
-      const projectRoot: string = String(args.projectRoot);
+      const projectRoot = getProjectRootFromArgs(args);
       const componentName: string = String(args.componentName);
 
-      // ignore TypeScript’s opinion about this signature
-      const graph: any = (analyzeProject as any)(projectRoot);
+      // ✅ correct usage now
+      const result: any = (analyzeProject as any)({ projectRoot });
+      const graph = result.graph;
       const node = graph[componentName];
 
       if (!node) {
@@ -66,7 +83,7 @@ function getServer() {
       const lr: any = info.lineRanges;
 
       if (lr?.state) {
-        const [s, e] = lr.state;
+        const [s, e] = [lr.state.start, lr.state.end];
         summaryLines.push(`  State:    ${s}-${e}`);
       } else {
         summaryLines.push("  State:    (none)");
@@ -75,7 +92,7 @@ function getServer() {
       if (lr?.effects?.length) {
         summaryLines.push(
           `  Effects:  ${lr.effects
-            .map(([s, e]: [number, number]) => `${s}-${e}`)
+            .map((r: any) => `${r.start}-${r.end}`)
             .join(", ")}`
         );
       } else {
@@ -85,7 +102,7 @@ function getServer() {
       if (lr?.handlers?.length) {
         summaryLines.push(
           `  Handlers: ${lr.handlers
-            .map(([s, e]: [number, number]) => `${s}-${e}`)
+            .map((r: any) => `${r.start}-${r.end}`)
             .join(", ")}`
         );
       } else {
@@ -93,7 +110,7 @@ function getServer() {
       }
 
       if (lr?.jsx) {
-        const [s, e] = lr.jsx;
+        const [s, e] = [lr.jsx.start, lr.jsx.end];
         summaryLines.push(`  JSX:      ${s}-${e}`);
       } else {
         summaryLines.push("  JSX:      (none)");
@@ -169,8 +186,10 @@ function getServer() {
       },
     } as any,
     async (args: any) => {
-      const projectRoot: string = String(args.projectRoot);
-      const graph: any = (analyzeProject as any)(projectRoot);
+      const projectRoot = getProjectRootFromArgs(args);
+
+      const result: any = (analyzeProject as any)({ projectRoot });
+      const graph = result.graph;
 
       const lines: string[] = [];
       const byRole: Record<string, string[]> = {};
@@ -205,9 +224,6 @@ function getServer() {
     }
   );
 
-  //
-  // ===== Tool 3: compo_tree =====
-  //
   (server as any).registerTool(
     "compo_tree",
     {
@@ -224,10 +240,11 @@ function getServer() {
       },
     } as any,
     async (args: any) => {
-      const projectRoot: string = String(args.projectRoot);
+      const projectRoot = getProjectRootFromArgs(args);
       const componentName: string = String(args.componentName);
 
-      const graph: any = (analyzeProject as any)(projectRoot);
+      const result: any = (analyzeProject as any)({ projectRoot });
+      const graph = result.graph;
       const node = graph[componentName];
 
       if (!node) {
@@ -275,40 +292,16 @@ function getServer() {
   return server;
 }
 
-// ---------- HTTP wiring for Smithery / local ----------
-const app = express();
-app.use(express.json());
-
-app.post("/mcp", async (req: Request, res: Response) => {
-  try {
-    const server = getServer();
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-    });
-
-    res.on("close", () => {
-      transport.close();
-      server.close();
-    });
-
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
-  } catch (err) {
-    console.error("Error handling MCP request:", err);
-    if (!res.headersSent) {
-      res.status(500).json({
-        jsonrpc: "2.0",
-        error: {
-          code: -32603,
-          message: "Internal server error",
-        },
-        id: null,
-      });
-    }
-  }
-});
-
-const PORT = Number(process.env.PORT ?? "3000");
-app.listen(PORT, () => {
-  console.log(`Component Archaeologist MCP listening on port ${PORT}`);
-});
+/**
+ * This is the **required default export** for Smithery shttp builds.
+ *
+ * They call this function and expect it to return an McpServer instance.
+ * We ignore `config` for now, but you can later use it to e.g. configure
+ * default projectRoot, aliases, etc.
+ */
+export default function createServer(_opts: {
+  config: unknown;
+  sessionId?: string;
+}) {
+  return createMcpServer();
+}
