@@ -8,19 +8,24 @@
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build": "tsc",
-    "dev": "ts-node src/cli/index.ts"
+    "dev": "ts-node src/cli/index.ts",
+    "build:shttp": "npx @smithery/cli@latest build src/mcp/server.ts --out .smithery/index.cjs --transport shttp",
+    "build": "npm run build:shttp"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.22.0",
     "@types/node": "^24.10.1",
+    "express": "^5.1.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
-    "@smithery/cli": "^1.6.3"
+    "@smithery/cli": "^1.6.3",
+    "@types/express": "^5.0.5"
   }
 }
